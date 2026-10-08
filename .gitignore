@@ -1,0 +1,82 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+venv_gpu/
+.venv/
+env/
+
+# Secrets
+.env
+.env.*
+.streamlit/secrets.toml
+*.key
+*.pem
+credentials.json
+secrets.json
+
+# Model checkpoints / large weights
+*.ckpt
+*.pth
+*.pt
+*.safetensors
+*.onnx
+*.bin
+model.ckpt
+
+# Datasets / raw satellite data
+datasets/
+data/
+raw/
+sample/
+acquisition/data_cache/
+
+# Generated outputs
+reconstructed_images/
+outputs/
+harmonization/output/
+cloud_generation/output/
+*.tif
+*.tiff
+*.npy
+
+# Temporary / logs
+*.log
+logs/
+temp/
+tmp/
+temp.tif
+*.tmp
+*.temp
+
+# Teammate OpenSR project
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# OpenSR: exclude upstream repository metadata and local artifacts
+diffffusiosm/.github/
+diffffusiosm/deployment/
+diffffusiosm/opensr_4serguoi/
+diffffusiosm/resources/
+
+# OpenSR model repository metadata
+diffffusiosm/opensr_model/.github/
+diffffusiosm/opensr_model/.pre-commit-config.yaml
+diffffusiosm/opensr_model/.editorconfig
+
+# Large generated project structure artifact
+project_structure.txt

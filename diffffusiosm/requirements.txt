@@ -1,0 +1,41 @@
+# Tensors
+torch>=2.2.0
+pytorch-lightning>=2.2.0
+transformers>=4.41.0
+
+# Geo
+geopandas==0.14.4
+rasterio==1.4.3
+pyproj==3.7.1
+affine>=2.4.0
+shapely>=2.0.2
+
+# CV
+opencv-python>=4.9.0
+scikit-image>=0.22.0
+scikit-learn>=1.4.0
+lpips>=0.1.4
+kornia>=0.7.0
+imageio>=2.34.0
+Pillow>=10.2.0
+
+# General
+torchaudio>=2.2.0
+torchmetrics>=1.3.0
+torchvision>=0.17.0
+omegaconf>=2.3.0
+oauthlib>=3.2.2
+numpy>=1.26.0
+pandas>=2.1,<3
+tqdm>=4.66.0
+einops>=0.7.0
+typing-extensions>=4.10.0
+wandb>=0.17.0
+
+# Diffusion
+diffusers>=0.30.0
+huggingface-hub>=0.24.0
+taming-transformers>=0.0.1
+
+# Utilities
+opensr_utils>=1.0.0

@@ -305,6 +305,19 @@ def make_ddim_timesteps(
     Returns:
         np.ndarray: An array of timesteps to use for computing alphas in the ddim sampler.
     """
+    if num_ddim_timesteps is None:
+        raise ValueError("num_ddim_timesteps cannot be None. Expected a positive integer.")
+    if isinstance(num_ddim_timesteps, bool) or not isinstance(num_ddim_timesteps, (int, np.integer)):
+        raise TypeError(
+            f"num_ddim_timesteps must be an integer, got {type(num_ddim_timesteps).__name__}: {num_ddim_timesteps}"
+        )
+    if num_ddim_timesteps <= 0:
+        raise ValueError(f"num_ddim_timesteps must be greater than zero, got {num_ddim_timesteps}")
+    if num_ddim_timesteps > num_ddpm_timesteps:
+        raise ValueError(
+            f"num_ddim_timesteps ({num_ddim_timesteps}) cannot exceed num_ddpm_timesteps ({num_ddpm_timesteps})"
+        )
+
     if ddim_discr_method == "uniform":
         c = num_ddpm_timesteps // num_ddim_timesteps
         ddim_timesteps = np.asarray(list(range(0, num_ddpm_timesteps, c)))
@@ -365,6 +378,26 @@ class DDIMSampler(object):
         ddim_eta: float = 0.0,
         verbose: bool = True,
     ) -> None:
+        if ddim_num_steps is None:
+            raise ValueError("ddim_num_steps cannot be None. Expected an integer in range [1, ddpm_num_timesteps].")
+        if isinstance(ddim_num_steps, bool) or not isinstance(ddim_num_steps, (int, np.integer)):
+            raise TypeError(
+                f"ddim_num_steps must be an integer, got {type(ddim_num_steps).__name__}: {ddim_num_steps}"
+            )
+        if ddim_num_steps <= 0:
+            raise ValueError(f"ddim_num_steps must be greater than zero, got {ddim_num_steps}")
+        if ddim_num_steps > self.ddpm_num_timesteps:
+            raise ValueError(
+                f"ddim_num_steps ({ddim_num_steps}) cannot exceed ddpm_num_timesteps ({self.ddpm_num_timesteps})"
+            )
+
+        if ddim_eta is None:
+            ddim_eta = 0.95
+        if isinstance(ddim_eta, bool) or not isinstance(ddim_eta, (int, float, np.floating)):
+            raise TypeError(f"ddim_eta must be a float or int, got {type(ddim_eta).__name__}: {ddim_eta}")
+        if ddim_eta < 0.0 or ddim_eta > 1.0:
+            raise ValueError(f"ddim_eta must be between 0.0 and 1.0, got {ddim_eta}")
+
         # make ddim timesteps. these are the timesteps at which we compute alphas
         self.ddim_timesteps = make_ddim_timesteps(
             ddim_discr_method=ddim_discretize,

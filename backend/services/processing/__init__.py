@@ -28,6 +28,16 @@ from .super_resolution import (
     OpenSRDiagnostics,
     validate_and_get_band_indices,
 )
+from .evaluation_metrics import (
+    ReferenceBasedMetrics,
+    ReferenceFreeDiagnostics,
+    OpenSRConsistencyDiagnostics,
+    compute_reference_based_metrics,
+    compute_reference_free_diagnostics,
+    compute_opensr_10m_consistency,
+    build_image_diagnostics_export,
+    sanitize_for_json,
+)
 
 __all__ = [
     "determine_utm_crs",
@@ -50,4 +60,12 @@ __all__ = [
     "OpenSRResult",
     "OpenSRDiagnostics",
     "validate_and_get_band_indices",
+    "ReferenceBasedMetrics",
+    "ReferenceFreeDiagnostics",
+    "OpenSRConsistencyDiagnostics",
+    "compute_reference_based_metrics",
+    "compute_reference_free_diagnostics",
+    "compute_opensr_10m_consistency",
+    "build_image_diagnostics_export",
+    "sanitize_for_json",
 ]

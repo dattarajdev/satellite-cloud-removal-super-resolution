@@ -111,6 +111,38 @@ def label_output(path: Path) -> None:
             dataset.set_band_description(index, band_name)
 
 
+def load_ldsrs2_model(device: str = "cpu"):
+    """Load LDSR-S2 model, preferring local verified config/checkpoint with fallback."""
+    local_config_path = ROOT / "opensr_model" / "configs" / "config_10m.yaml"
+    ckpt_path = ROOT / "opensr-ldsrs2_v1_0_0.ckpt"
+
+    if local_config_path.is_file() and ckpt_path.is_file():
+        try:
+            from omegaconf import OmegaConf
+            import opensr_model
+
+            config = OmegaConf.load(local_config_path)
+            if hasattr(config, "denoiser_settings"):
+                if getattr(config.denoiser_settings, "sampling_steps", None) is None:
+                    config.denoiser_settings.sampling_steps = 100
+                if getattr(config.denoiser_settings, "sampling_eta", None) is None:
+                    config.denoiser_settings.sampling_eta = 0.95
+
+            model = opensr_model.SRLatentDiffusion(config, device=device)
+            model.load_pretrained(str(ckpt_path))
+            return model
+        except Exception as exc:
+            print(f"Notice: Loading local config/checkpoint failed ({exc}); falling back to get_ldsrs2...")
+
+    model = get_ldsrs2(device=device)
+    if hasattr(model, "config") and hasattr(model.config, "denoiser_settings"):
+        if getattr(model.config.denoiser_settings, "sampling_steps", None) is None:
+            model.config.denoiser_settings.sampling_steps = 100
+        if getattr(model.config.denoiser_settings, "sampling_eta", None) is None:
+            model.config.denoiser_settings.sampling_eta = 0.95
+    return model
+
+
 def run(source: Path) -> Path:
     source = source.expanduser().resolve()
     if not source.is_file() or source.suffix.lower() not in {".tif", ".tiff"}:
@@ -124,7 +156,7 @@ def run(source: Path) -> Path:
         prepared = prepare_rgbn(source, workspace)
         device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"Using {device.upper()}. Preparing {source.name}...")
-        model = get_ldsrs2(device=device)
+        model = load_ldsrs2_model(device=device)
         job = opensr_utils.large_file_processing(
             root=str(prepared),
             model=model,
@@ -164,6 +196,8 @@ def main() -> int:
     try:
         result = run(source)
     except Exception as error:
+        import traceback
+        traceback.print_exc()
         print(f"\nCould not process the TIFF:\n{error}", file=sys.stderr)
         return 1
 

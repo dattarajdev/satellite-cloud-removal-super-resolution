@@ -25,6 +25,14 @@ from PIL import Image
 from models.ecrformer_model import ECRformerModel
 from preprocessing import normalize_s1_safe, normalize_s2_safe
 from visualization import to_rgb, sar_preview
+from .evaluation_metrics import (
+    ReferenceBasedMetrics,
+    ReferenceFreeDiagnostics,
+    compute_reference_based_metrics,
+    compute_reference_free_diagnostics,
+    build_image_diagnostics_export,
+    sanitize_for_json,
+)
 
 S2_BAND_NAMES: List[str] = [
     "B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08",
@@ -54,9 +62,17 @@ class InferenceDiagnostics:
     min_val: float
     max_val: float
     mean_val: float
+    crs: str = ""
+    pixel_size_m: float = 10.0
+    nan_count: int = 0
+    inf_count: int = 0
+    per_band_stats: Optional[Dict[str, Dict[str, float]]] = None
+    reference_metrics: Optional[ReferenceBasedMetrics] = None
+    reference_status: str = "Reference-based image-quality metrics unavailable: no cloud-free reference supplied."
+    gpu_memory: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        data = {
             "device": self.device,
             "execution_time_seconds": round(self.execution_time_seconds, 3),
             "tile_count": self.tile_count,
@@ -68,7 +84,22 @@ class InferenceDiagnostics:
             "valid_min": round(self.min_val, 6),
             "valid_max": round(self.max_val, 6),
             "valid_mean": round(self.mean_val, 6),
+            "crs": self.crs,
+            "pixel_size_m": self.pixel_size_m,
+            "nan_count": self.nan_count,
+            "inf_count": self.inf_count,
+            "per_band_stats": self.per_band_stats,
+            "reference_status": (
+                "Reference-based image-quality metrics computed successfully."
+                if self.reference_metrics and self.reference_metrics.available
+                else self.reference_status
+            ),
+            "reference_based_metrics": (
+                self.reference_metrics.to_dict() if self.reference_metrics else None
+            ),
+            "gpu_memory": self.gpu_memory,
         }
+        return sanitize_for_json(data)
 
 
 @dataclass
@@ -82,6 +113,93 @@ class InferenceResult:
     sar_preview_img: Image.Image
     output_tif_path: Optional[Path] = None
     output_png_path: Optional[Path] = None
+    reference_metrics: Optional[ReferenceBasedMetrics] = None
+
+    def evaluate_with_reference(
+        self,
+        reference_target: Any,
+        band_names: Optional[List[str]] = None,
+        scale_mode: str = "auto",
+        reference_type: str = "paired_ground_truth",
+        acquisition_date: Optional[str] = None,
+        temporal_distance_days: Optional[float] = None,
+    ) -> ReferenceBasedMetrics:
+        """
+        Evaluate reconstructed prediction against a ground-truth or temporal reference.
+        Never reruns inference; evaluates existing in-memory prediction array.
+        Supports Streamlit UploadedFile, file paths, bytes, MemoryFile, or ValidatedReference.
+        """
+        from .reference_adapter import ValidatedReference, load_and_validate_reference
+
+        if isinstance(reference_target, ValidatedReference):
+            val_ref = reference_target
+        elif isinstance(reference_target, np.ndarray):
+            metrics = compute_reference_based_metrics(
+                prediction=self.prediction,
+                target=reference_target,
+                valid_mask=self.valid_mask,
+                band_names=band_names or S2_BAND_NAMES,
+                data_range=1.0,
+                reference_type=reference_type,
+                reference_date=acquisition_date,
+                temporal_distance_days=temporal_distance_days,
+            )
+            self.reference_metrics = metrics
+            self.diagnostics.reference_metrics = metrics
+            self.diagnostics.reference_status = metrics.status
+            return metrics
+        else:
+            val_ref = load_and_validate_reference(
+                reference_input=reference_target,
+                target_profile=self.profile,
+                scale_mode=scale_mode,
+                reference_type=reference_type,
+                acquisition_date=acquisition_date,
+                temporal_distance_days=temporal_distance_days,
+            )
+
+        combined_mask = self.valid_mask & val_ref.valid_mask
+
+        metrics = compute_reference_based_metrics(
+            prediction=self.prediction,
+            target=val_ref.array,
+            valid_mask=combined_mask,
+            band_names=band_names or S2_BAND_NAMES,
+            data_range=1.0,
+            reference_type=val_ref.reference_type,
+            reference_source=val_ref.source_name,
+            reference_date=val_ref.acquisition_date,
+            temporal_distance_days=val_ref.temporal_distance_days,
+        )
+        self.reference_metrics = metrics
+        self.diagnostics.reference_metrics = metrics
+        self.diagnostics.reference_status = metrics.status
+        return metrics
+
+    def to_diagnostics_export(self, image_id: str) -> Dict[str, Any]:
+        """Generate structured JSON diagnostics export for this image."""
+        ref_free = compute_reference_free_diagnostics(
+            prediction=self.prediction,
+            valid_mask=self.valid_mask,
+            band_names=S2_BAND_NAMES,
+            crs=self.diagnostics.crs,
+            spatial_resolution_m=self.diagnostics.pixel_size_m,
+        )
+        return build_image_diagnostics_export(
+            image_id=image_id,
+            stage_name="ECRformer Cloud Reconstruction",
+            input_path=str(self.output_tif_path) if self.output_tif_path else None,
+            output_path=str(self.output_tif_path) if self.output_tif_path else None,
+            dimensions=list(self.prediction.shape[1:]),
+            band_names=S2_BAND_NAMES,
+            crs=self.diagnostics.crs,
+            pixel_size_m=self.diagnostics.pixel_size_m,
+            execution_time_seconds=self.diagnostics.execution_time_seconds,
+            execution_device=self.diagnostics.device,
+            reference_metrics=self.reference_metrics,
+            reference_free_diagnostics=ref_free,
+            gpu_memory=self.diagnostics.gpu_memory,
+        )
 
     def save_geotiff(self, path: Union[str, Path]) -> Path:
         out_path = Path(path)
@@ -366,6 +484,36 @@ class InferenceService:
 
             prediction[:, ~valid_mask] = config.nodata_value
 
+            per_band_stats = {}
+            for i, name in enumerate(S2_BAND_NAMES):
+                if valid_pixels > 0:
+                    b_vals = prediction[i][valid_mask]
+                    finite_b = b_vals[np.isfinite(b_vals)]
+                    if finite_b.size > 0:
+                        per_band_stats[name] = {
+                            "min": float(np.min(finite_b)),
+                            "max": float(np.max(finite_b)),
+                            "mean": float(np.mean(finite_b)),
+                        }
+                    else:
+                        per_band_stats[name] = {"min": 0.0, "max": 0.0, "mean": 0.0}
+                else:
+                    per_band_stats[name] = {"min": 0.0, "max": 0.0, "mean": 0.0}
+
+            nan_count = int(np.isnan(prediction).sum())
+            inf_count = int(np.isinf(prediction).sum())
+            out_crs = str(s2_src.crs) if s2_src.crs else ""
+            out_res = float(abs(s2_src.transform.a)) if s2_src.transform else 10.0
+
+            gpu_mem_str = None
+            if "cuda" in str(self.device).lower() and torch.cuda.is_available():
+                try:
+                    alloc_mb = torch.cuda.memory_allocated() / 1e6
+                    reserved_mb = torch.cuda.memory_reserved() / 1e6
+                    gpu_mem_str = f"Allocated: {alloc_mb:.1f} MB, Reserved: {reserved_mb:.1f} MB"
+                except Exception:
+                    gpu_mem_str = None
+
             if valid_pixels > 0:
                 valid_pred_vals = prediction[:, valid_mask]
                 min_val = float(valid_pred_vals.min())
@@ -387,6 +535,14 @@ class InferenceService:
                 min_val=min_val,
                 max_val=max_val,
                 mean_val=mean_val,
+                crs=out_crs,
+                pixel_size_m=out_res,
+                nan_count=nan_count,
+                inf_count=inf_count,
+                per_band_stats=per_band_stats,
+                reference_metrics=None,
+                reference_status="Reference-based image-quality metrics unavailable: no cloud-free reference supplied.",
+                gpu_memory=gpu_mem_str,
             )
 
             cloudy_rgb = to_rgb(s2_norm, brightness=config.brightness, valid_mask=valid_mask)

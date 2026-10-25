@@ -67,6 +67,9 @@ from backend.services.satellite.acquisition_cache import (
     write_cache_metadata,
 )
 from visualization import to_rgb, sar_preview
+from ui.theme import inject_css, toggle_theme, get_theme
+from ui.landing import render_landing_page
+from backend.services.processing.persistence import record_run, get_recent_runs
 
 CACHE_DIR = ROOT / "acquisition" / "data_cache"
 HARM_OUTPUT_BASE = ROOT / "harmonization" / "output"
@@ -77,14 +80,43 @@ DEFAULT_CKPT = ROOT / "model.ckpt"
 
 # ---- Page config ----
 st.set_page_config(
-    page_title="Satellite Cloud Removal | ECRformer",
-    page_icon=":satellite:",
+    page_title="CloudVisionAI — Satellite Image Restoration",
+    page_icon="🛰️",
     layout="wide",
 )
 
+# ---- Theme & Session State ----
+if "cvai_theme" not in st.session_state:
+    st.session_state["cvai_theme"] = "dark"
+if "active_view" not in st.session_state:
+    st.session_state["active_view"] = "landing"
+
+# Inject full CloudVisionAI theme stylesheet
+inject_css()
+
+# Render landing page when active view is "landing"
+if st.session_state.get("active_view", "landing") == "landing":
+    render_landing_page()
+    st.stop()
+
+# ===========================================================================
+# WORKSPACE VIEW
+# ===========================================================================
+
 # ---- Sidebar Configuration ----
 with st.sidebar:
-    st.header("Configuration")
+    st.markdown(
+        """
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+            <span style="font-size:1.5rem;">🛰️</span>
+            <div>
+                <span class="cvai-brand" style="font-size:1.2rem;">CloudVisionAI</span><br>
+                <span class="cvai-brand-sub">Configuration</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     cid = os.environ.get("CDSE_CLIENT_ID", "").strip()
     csec = os.environ.get("CDSE_CLIENT_SECRET", "").strip()
@@ -119,6 +151,22 @@ with st.sidebar:
     overlap = st.select_slider("Tile Overlap", options=[16, 32, 64], value=32)
     brightness = st.slider("RGB Brightness", 1.0, 5.0, 2.5, 0.1)
 
+    # SQLite Run History
+    st.divider()
+    with st.expander("📜 Recent Run History (SQLite)", expanded=False):
+        recent_runs = get_recent_runs(limit=5)
+        if recent_runs:
+            for r in recent_runs:
+                st.markdown(
+                    f"**`{r['run_id']}`** ({r['mode']})  \n"
+                    f"<span style='font-size:0.75rem; color:#8B949E;'>"
+                    f"{r['created_at'][:19].replace('T', ' ')} · {r.get('dimensions', 'N/A')} · {r.get('execution_time_s', 0):.2f}s"
+                    f"</span>",
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.caption("No persistent run records yet.")
+
 # ---- Singleton Inference Service ----
 @st.cache_resource
 def get_service():
@@ -126,8 +174,35 @@ def get_service():
 
 service = get_service()
 
-st.title(":satellite: Generative AI Satellite Cloud Removal")
-st.caption("Location Search -> CDSE Acquisition -> Spatial Harmonization -> ECRformer Reconstruction -> 13-Band GeoTIFF")
+# Workspace Top Navigation Header
+ws_col_brand, ws_col_actions = st.columns([6, 4])
+with ws_col_brand:
+    st.markdown(
+        """
+        <div style="display:flex; align-items:center; gap:12px; margin-bottom: 2px;">
+            <span style="font-size: 1.8rem;">🛰️</span>
+            <div>
+                <span class="cvai-brand">CloudVisionAI</span>
+                <span style="font-size: 0.72rem; color: #8B949E; margin-left: 10px; text-transform: uppercase; font-weight: 700; letter-spacing: 0.08em; background: rgba(31,111,235,0.15); border: 1px solid rgba(31,111,235,0.3); padding: 2px 8px; border-radius: 12px;">Workspace</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+with ws_col_actions:
+    ws_b1, ws_b2 = st.columns([1.4, 1])
+    with ws_b1:
+        if st.button("← Back to Landing", key="ws_back_landing_btn", use_container_width=True):
+            st.session_state["active_view"] = "landing"
+            st.rerun()
+    with ws_b2:
+        ws_theme_label = "☀️ Light" if get_theme() == "dark" else "🌙 Dark"
+        if st.button(ws_theme_label, key="ws_theme_btn", use_container_width=True):
+            toggle_theme()
+            st.rerun()
+
+st.title("🛰️ Satellite Cloud Removal & Reconstruction")
+st.caption("Copernicus Data Space Ecosystem → Spatial Harmonization → ECRformer Reconstruction → Quantitative Evaluation & OpenSR")
 
 tab_live, tab_cached = st.tabs(["Live Acquisition", "Cached Phase 2 Baseline"])
 
@@ -225,6 +300,21 @@ with tab_cached:
                 pb.progress(100, text="Inference Complete!")
                 st.session_state["cached_ecr_result"] = result_c
                 st.session_state.pop("cached_sr_result", None)
+                try:
+                    record_run(
+                        run_id=f"cached_{uuid.uuid4().hex[:8]}",
+                        mode="cached_baseline",
+                        aoi_label="Rome Area (EPSG:32633)",
+                        s2_date="Cached S2",
+                        s1_date="Cached S1",
+                        crs="EPSG:32633",
+                        dimensions=f"{result_c.diagnostics.output_shape[2]}x{result_c.diagnostics.output_shape[1]}",
+                        execution_time_s=result_c.diagnostics.execution_time_seconds,
+                        device=result_c.diagnostics.device,
+                        ecrformer_output_path=str(DEFAULT_S2) if DEFAULT_S2.exists() else None,
+                    )
+                except Exception:
+                    pass
             except Exception as exc:
                 st.error(f"Inference failed: {exc}")
 
@@ -1033,6 +1123,23 @@ with tab_live:
                     st.session_state.pop("live_clear_ref", None)
                     st.session_state.pop("live_clear_ref_candidates", None)
                     st.session_state.pop("live_clear_ref_cand_meta", None)
+                    try:
+                        date_val = sel_s2.utc_date() if sel_s2 else "live"
+                        s1_val = sel_s1.utc_date() if (sel_s1 is not None and hasattr(sel_s1, "utc_date")) else None
+                        record_run(
+                            run_id=f"live_{uuid.uuid4().hex[:8]}",
+                            mode="live_acquisition",
+                            aoi_label=loc_name if ("loc_name" in locals() and loc_name) else "Live AOI",
+                            s2_date=date_val,
+                            s1_date=s1_val,
+                            crs=str(harm_pair.crs) if harm_pair else None,
+                            dimensions=f"{d.output_shape[2]}x{d.output_shape[1]}",
+                            execution_time_s=d.execution_time_seconds,
+                            device=d.device,
+                            ecrformer_output_path=str(harm_pair.s2_path) if harm_pair else None,
+                        )
+                    except Exception:
+                        pass
                 except Exception as exc:
                     st.error(f"ECRformer inference failed: {exc}")
                     log(f"Inference FAILED: {exc}", ok=False)

@@ -30,6 +30,12 @@ from PIL import Image
 import rasterio
 
 from .band_selector import validate_and_get_band_indices
+from ..evaluation_metrics import (
+    OpenSRConsistencyDiagnostics,
+    compute_opensr_10m_consistency,
+    build_image_diagnostics_export,
+    sanitize_for_json,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +77,18 @@ class OpenSRDiagnostics:
     output_crs: str
     output_pixel_size_m: float
     bounds_preserved: bool
+    input_pixel_size_m: float = 10.0
+    geographic_bounds: Optional[Dict[str, float]] = None
+    consistency_10m: Optional[OpenSRConsistencyDiagnostics] = None
+    ground_truth_status: str = (
+        "Reference-based super-resolution accuracy metrics unavailable: no high-resolution ground truth supplied."
+    )
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        data = {
             "model": "OpenSR LDSR-S2 (Latent Diffusion)",
             "scale_factor": f"{self.scale_factor}x",
-            "input_resolution_m": 10.0,
+            "input_resolution_m": self.input_pixel_size_m,
             "output_resolution_m": self.output_pixel_size_m,
             "input_dimensions": [self.input_width, self.input_height],
             "output_dimensions": [self.output_width, self.output_height],
@@ -88,8 +100,14 @@ class OpenSRDiagnostics:
             "gpu_memory": self.gpu_memory,
             "sampling_steps": self.sampling_steps,
             "output_crs": self.output_crs,
+            "geographic_bounds": self.geographic_bounds,
             "bounds_preserved": self.bounds_preserved,
+            "ground_truth_status": self.ground_truth_status,
+            "consistency_10m": (
+                self.consistency_10m.to_dict() if self.consistency_10m else None
+            ),
         }
+        return sanitize_for_json(data)
 
 
 @dataclass
@@ -111,6 +129,25 @@ class OpenSRResult:
         buf = io.BytesIO()
         self.sr_rgb_preview.save(buf, format="PNG")
         return buf.getvalue()
+
+    def to_diagnostics_export(self, image_id: str) -> Dict[str, Any]:
+        """Construct schema-compliant JSON diagnostics export dictionary."""
+        return build_image_diagnostics_export(
+            image_id=image_id,
+            stage_name="OpenSR Diffusion Super-Resolution",
+            input_path=str(self.diagnostics.input_path),
+            output_path=str(self.sr_geotiff_path),
+            dimensions=[self.diagnostics.output_height, self.diagnostics.output_width],
+            band_names=self.diagnostics.selected_bands,
+            crs=self.diagnostics.output_crs,
+            pixel_size_m=self.diagnostics.output_pixel_size_m,
+            execution_time_seconds=self.diagnostics.execution_time_seconds,
+            execution_device=self.diagnostics.execution_device,
+            opensr_consistency=self.diagnostics.consistency_10m,
+            sampling_steps=self.diagnostics.sampling_steps,
+            gpu_memory=self.diagnostics.gpu_memory,
+            notes=[self.diagnostics.ground_truth_status],
+        )
 
     def save_geotiff(self, path: Union[str, Path]) -> Path:
         """Copy the 4-band GeoTIFF to an external destination."""
@@ -290,7 +327,27 @@ class OpenSRService:
                     f"Bounds difference detected: in={src_in.bounds} vs out={src_out.bounds}"
                 )
 
-        # 6. Render RGB preview strictly from B04, B03, B02 (excluding B08 NIR)
+            geo_bounds = {
+                "left": round(float(src_out.bounds.left), 2),
+                "bottom": round(float(src_out.bounds.bottom), 2),
+                "right": round(float(src_out.bounds.right), 2),
+                "top": round(float(src_out.bounds.top), 2),
+            }
+            in_pixel_size = float(abs(src_in.transform.a))
+
+            # 6. Optional 10 m consistency evaluation against ECRformer baseline
+            consistency_10m = None
+            try:
+                sr_arr = src_out.read().astype(np.float32)
+                ecr_arr = src_in.read().astype(np.float32)
+                consistency_10m = compute_opensr_10m_consistency(
+                    opensr_4band_2_5m=sr_arr,
+                    ecrformer_13band_10m=ecr_arr,
+                )
+            except Exception as e:
+                logger.warning(f"Could not compute optional 10m consistency: {e}")
+
+        # 7. Render RGB preview strictly from B04, B03, B02 (excluding B08 NIR)
         preview_img = self.render_rgb_preview(destination_tif, brightness=cfg.brightness)
         preview_png_path = out_dir / f"{input_path.stem}_sr_2.5m_preview.png"
         preview_img.save(preview_png_path, format="PNG")
@@ -308,11 +365,14 @@ class OpenSRService:
             selected_bands=["B04", "B03", "B02", "B08"],
             execution_time_seconds=elapsed_time,
             execution_device=exec_device,
-            sampling_steps=None,
+            sampling_steps=100,
             gpu_memory="Unavailable across subprocess boundary",
             output_crs=out_crs,
             output_pixel_size_m=out_pixel_size,
             bounds_preserved=bounds_match,
+            input_pixel_size_m=in_pixel_size,
+            geographic_bounds=geo_bounds,
+            consistency_10m=consistency_10m,
         )
 
         return OpenSRResult(

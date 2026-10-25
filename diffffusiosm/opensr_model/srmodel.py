@@ -27,6 +27,13 @@ class SRLatentDiffusion(torch.nn.Module):
 
         # Set up the model
         self.config = config        
+        # Ensure sampling_steps and sampling_eta have valid defaults if None in config
+        if hasattr(self.config, "denoiser_settings"):
+            if getattr(self.config.denoiser_settings, "sampling_steps", None) is None:
+                self.config.denoiser_settings.sampling_steps = 100
+            if getattr(self.config.denoiser_settings, "sampling_eta", None) is None:
+                self.config.denoiser_settings.sampling_eta = 0.95
+
         self.model = LatentDiffusion(
             config.first_stage_config,
             config.cond_stage_config,
@@ -87,6 +94,45 @@ class SRLatentDiffusion(torch.nn.Module):
         X_dec[X_dec < 0] = 0    
         return X_dec
     
+    def _resolve_and_validate_sampling_steps(self, steps=None) -> int:
+        if steps is None:
+            if hasattr(self, "config") and hasattr(self.config, "denoiser_settings"):
+                steps = getattr(self.config.denoiser_settings, "sampling_steps", None)
+        if steps is None:
+            steps = 100
+
+        total_timesteps = getattr(getattr(self, "model", None), "num_timesteps", 1000)
+        if isinstance(steps, bool) or not isinstance(steps, (int, np.integer)):
+            raise TypeError(
+                f"sampling_steps must be an integer, got {type(steps).__name__}: {steps}"
+            )
+
+        steps = int(steps)
+        if steps <= 0:
+            raise ValueError(f"sampling_steps must be greater than zero, got {steps}")
+        if steps > total_timesteps:
+            raise ValueError(
+                f"sampling_steps ({steps}) cannot exceed model training timesteps ({total_timesteps})"
+            )
+        return steps
+
+    def _resolve_and_validate_eta(self, eta=None) -> float:
+        if eta is None:
+            if hasattr(self, "config") and hasattr(self.config, "denoiser_settings"):
+                eta = getattr(self.config.denoiser_settings, "sampling_eta", None)
+        if eta is None:
+            eta = 0.95
+
+        if isinstance(eta, bool) or not isinstance(eta, (int, float, np.floating)):
+            raise TypeError(
+                f"sampling_eta must be a float or int, got {type(eta).__name__}: {eta}"
+            )
+
+        eta = float(eta)
+        if eta < 0.0:
+            raise ValueError(f"sampling_eta must be non-negative, got {eta}")
+        return eta
+
     def _prepare_model(
         self,
         X: torch.Tensor,
@@ -94,6 +140,9 @@ class SRLatentDiffusion(torch.nn.Module):
         custom_steps: int = 100,
         verbose: bool = False 
     ):
+        custom_steps = self._resolve_and_validate_sampling_steps(custom_steps)
+        eta = self._resolve_and_validate_eta(eta)
+
         # Create the DDIM sampler
         ddim = DDIMSampler(self.model)
         
@@ -139,13 +188,14 @@ class SRLatentDiffusion(torch.nn.Module):
             torch.Tensor: The super resolved image or batch of images with a shape of
                 Cx(Wx4)x(Hx4) or BxCx(Wx4)x(Hx4).
         """
-        # fall back on config if args are None
-        if sampling_eta is None:
-            sampling_eta = self.config.denoiser_settings.sampling_eta
+        # Resolve and validate sampling configuration
+        sampling_steps = self._resolve_and_validate_sampling_steps(sampling_steps)
+        sampling_eta = self._resolve_and_validate_eta(sampling_eta)
         if sampling_temperature is None:
-            sampling_temperature = self.config.denoiser_settings.sampling_temperature
-        if sampling_steps is None:
-            sampling_steps = self.config.denoiser_settings.sampling_steps
+            if hasattr(self, "config") and hasattr(self.config, "denoiser_settings"):
+                sampling_temperature = getattr(self.config.denoiser_settings, "sampling_temperature", 1.0)
+            if sampling_temperature is None:
+                sampling_temperature = 1.0
             
         # Set potentially problematic values to 0 to avoid issues in the model.
         X = torch.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)

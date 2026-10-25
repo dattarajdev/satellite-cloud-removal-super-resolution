@@ -293,10 +293,11 @@ class CDSESentinelHubProvider(SatelliteProvider):
         start_date: str,
         end_date: str,
         max_results: int = 20,
+        collection: str = _S2L1C_COLLECTION,
     ) -> list[S2Scene]:
-        """Search Sentinel-2 L1C scenes covering bbox in [start_date, end_date]."""
+        """Search Sentinel-2 scenes (L1C or L2A) covering bbox in [start_date, end_date]."""
         raw_features = self._stac_search(
-            collection=_S2L1C_COLLECTION,
+            collection=collection,
             bbox=bbox,
             start_date=start_date,
             end_date=end_date,
@@ -305,7 +306,7 @@ class CDSESentinelHubProvider(SatelliteProvider):
         scenes = []
         for feat in raw_features:
             try:
-                scenes.append(self._parse_s2_feature(feat))
+                scenes.append(self._parse_s2_feature(feat, collection=collection))
             except Exception as exc:
                 print(f"  [WARN] Skipping malformed S2 feature: {exc}",
                       file=sys.stderr)
@@ -393,7 +394,7 @@ class CDSESentinelHubProvider(SatelliteProvider):
         return payload.get("features", [])
 
     @staticmethod
-    def _parse_s2_feature(feature: dict) -> S2Scene:
+    def _parse_s2_feature(feature: dict, collection: str = _S2L1C_COLLECTION) -> S2Scene:
         props = feature.get("properties", {})
 
         dt_str = (
@@ -409,11 +410,13 @@ class CDSESentinelHubProvider(SatelliteProvider):
         cloud_raw = props.get("eo:cloud_cover")
         cloud_cover = float(cloud_raw) if cloud_raw is not None else None
 
+        level = "L2A" if "l2a" in collection.lower() else "L1C"
+
         return S2Scene(
             scene_id=feature.get("id", "unknown"),
             dt=dt,
             cloud_cover=cloud_cover,
-            processing_level="L1C",
+            processing_level=level,
             footprint=feature.get("geometry"),
             extra=props,
         )

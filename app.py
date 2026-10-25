@@ -41,7 +41,16 @@ from backend.services.processing import (
     OpenSRConfig,
     OpenSRResult,
 )
+from backend.services.processing.metrics_ui import (
+    render_ecrformer_metrics_ui,
+    render_opensr_metrics_ui,
+)
 from backend.services.satellite.base import BoundingBox, S2Scene, S1Scene
+from backend.services.satellite import (
+    ClearReferenceService,
+    ClearReferenceCandidate,
+)
+from backend.services.processing.reference_adapter import ValidatedReference
 from backend.services.satellite.geocoding import (
     GeocodedLocation,
     geocode_location,
@@ -257,6 +266,14 @@ with tab_cached:
                     key="c_dl_png",
                 )
 
+            # Dedicated ECRformer Metrics & Diagnostics Area
+            render_ecrformer_metrics_ui(
+                result=cached_res,
+                image_id="cached_baseline",
+                key_prefix="c_ecr",
+                allow_reference_upload=True,
+            )
+
             # Optional OpenSR Super-Resolution Stage
             st.divider()
             st.markdown("### Optional Post-Processing: Diffusion Super-Resolution (OpenSR 4×)")
@@ -281,7 +298,6 @@ with tab_cached:
             cached_sr: Optional[OpenSRResult] = st.session_state.get("cached_sr_result")
             if cached_sr is not None:
                 st.subheader("OpenSR Super-Resolution (4 bands | 2.5 m | 4×)")
-                sr_d = cached_sr.diagnostics
 
                 sr_v1, sr_v2 = st.columns(2)
                 with sr_v1:
@@ -289,14 +305,7 @@ with tab_cached:
                 with sr_v2:
                     st.image(cached_sr.sr_rgb_preview, caption="OpenSR 2.5 m Super-Resolved (RGB: B04, B03, B02)", use_container_width=True)
 
-                srm1, srm2, srm3, srm4, srm5 = st.columns(5)
-                srm1.metric("Resolution", f"{sr_d.output_pixel_size_m} m")
-                srm2.metric("Scale Factor", f"{sr_d.scale_factor}x")
-                srm3.metric("Output Dimensions", f"{sr_d.output_width}x{sr_d.output_height}")
-                srm4.metric("Device", sr_d.execution_device)
-                srm5.metric("SR Time", f"{sr_d.execution_time_seconds:.1f}s")
-
-                srdl1, srdl2, srdl3 = st.columns(3)
+                srdl1, srdl2 = st.columns(2)
                 with srdl1:
                     st.download_button(
                         "Download 4-Band SR GeoTIFF (2.5m)",
@@ -315,18 +324,13 @@ with tab_cached:
                         use_container_width=True,
                         key="c_sr_dl_png",
                     )
-                with srdl3:
-                    st.download_button(
-                        "Download OpenSR Diagnostics JSON",
-                        data=json.dumps(sr_d.to_dict(), indent=2),
-                        file_name="opensr_diagnostics.json",
-                        mime="application/json",
-                        use_container_width=True,
-                        key="c_sr_dl_json",
-                    )
 
-                with st.expander("OpenSR Technical Diagnostics & Metadata", expanded=False):
-                    st.json(sr_d.to_dict())
+                # Dedicated OpenSR Metrics & Diagnostics Area
+                render_opensr_metrics_ui(
+                    sr_res=cached_sr,
+                    image_id="cached_baseline",
+                    key_prefix="c_sr",
+                )
 # ===========================================================================
 # TAB 1: Live Acquisition Workflow
 # ===========================================================================
@@ -1024,7 +1028,11 @@ with tab_live:
                     st.session_state["live_result"] = result
                     st.session_state["live_harm_pair"] = harm_pair
                     st.session_state["live_s2_meta"] = sel_s2
+                    st.session_state["live_bbox"] = bbox
                     st.session_state.pop("live_sr_result", None)
+                    st.session_state.pop("live_clear_ref", None)
+                    st.session_state.pop("live_clear_ref_candidates", None)
+                    st.session_state.pop("live_clear_ref_cand_meta", None)
                 except Exception as exc:
                     st.error(f"ECRformer inference failed: {exc}")
                     log(f"Inference FAILED: {exc}", ok=False)
@@ -1097,15 +1105,188 @@ with tab_live:
                 key="live_dl_json",
             )
 
-        with st.expander("Technical Diagnostics & Metadata", expanded=False):
-            st.json(diag.to_dict())
-            if live_harm:
-                st.json({
-                    "harmonized_crs": f"EPSG:{live_harm.grid.crs.to_epsg()}",
-                    "dimensions_px": [live_harm.s2_shape[2], live_harm.s2_shape[1]],
-                    "target_resolution_m": 10.0,
-                    "validation_passed": live_harm.validation_passed,
-                })
+        # Dedicated ECRformer Metrics & Diagnostics Area
+        render_ecrformer_metrics_ui(
+            result=live_res,
+            image_id=f"session_{date_str}",
+            key_prefix="live_ecr",
+            allow_reference_upload=True,
+        )
+
+        # --------------------------------------------------------------
+        # Live Clear-Reference Search (CDSE Sentinel-2)
+        # --------------------------------------------------------------
+        active_bbox = st.session_state.get("live_bbox") or bbox
+        target_date_str = live_s2.utc_date() if live_s2 else None
+
+        if active_bbox is not None and target_date_str is not None:
+            with st.expander("🔍 Find a Clear Reference for This AOI (CDSE Sentinel-2)", expanded=False):
+                st.caption(
+                    "Search the CDSE catalogue for low-cloud Sentinel-2 scenes covering this exact AOI "
+                    "within a configurable temporal window. A selected candidate will be acquired, geospatially "
+                    "aligned to the ECRformer prediction grid, and compared without modifying inference inputs."
+                )
+
+                rc1, rc2, rc3 = st.columns(3)
+                with rc1:
+                    window_days = st.slider(
+                        "Search Window (±Days)",
+                        min_value=5,
+                        max_value=90,
+                        value=30,
+                        step=5,
+                        key="live_ref_window",
+                    )
+                with rc2:
+                    max_scene_cloud = st.slider(
+                        "Max Scene Cloud %",
+                        min_value=1.0,
+                        max_value=50.0,
+                        value=15.0,
+                        step=1.0,
+                        key="live_ref_max_scene_cloud",
+                    )
+                with rc3:
+                    max_aoi_cloud = st.slider(
+                        "Max AOI Cloud %",
+                        min_value=1.0,
+                        max_value=30.0,
+                        value=10.0,
+                        step=1.0,
+                        key="live_ref_max_aoi_cloud",
+                    )
+
+                rc4, rc5 = st.columns(2)
+                with rc4:
+                    ref_collection = st.selectbox(
+                        "Sentinel-2 Collection",
+                        ["sentinel-2-l2a", "sentinel-2-l1c"],
+                        index=0,
+                        key="live_ref_collection",
+                        help="Level-2A provides Bottom-of-Atmosphere reflectance and Scene Classification (SCL). Level-1C provides Top-of-Atmosphere reflectance.",
+                    )
+                with rc5:
+                    max_cands = st.number_input(
+                        "Max Candidates",
+                        min_value=1,
+                        max_value=20,
+                        value=6,
+                        key="live_ref_max_cands",
+                    )
+
+                if st.button("Search CDSE for Clear Reference Scenes", key="btn_search_clear_ref", use_container_width=True):
+                    with st.spinner(f"Querying CDSE catalogue for clear scenes around {target_date_str} (±{window_days} days)..."):
+                        try:
+                            ref_provider = st.session_state.get("catalogue_provider")
+                            ref_svc = ClearReferenceService(provider=ref_provider)
+                            candidates = ref_svc.search_candidates(
+                                bbox=active_bbox,
+                                target_date=target_date_str,
+                                window_days=int(window_days),
+                                max_scene_cloud_cover=float(max_scene_cloud),
+                                max_aoi_cloud_fraction=float(max_aoi_cloud),
+                                max_candidates=int(max_cands),
+                                collection=ref_collection,
+                            )
+                            st.session_state["live_clear_ref_candidates"] = candidates
+                            if not candidates:
+                                st.info(
+                                    f"No suitable clear reference scenes were found within ±{window_days} days "
+                                    f"(scene cloud <= {max_scene_cloud}%, AOI cloud <= {max_aoi_cloud}%). "
+                                    "Try expanding the date window or cloud thresholds, or upload a manual reference GeoTIFF above."
+                                )
+                        except Exception as e:
+                            st.error(f"CDSE catalogue search failed: {e}")
+
+                candidates_list = st.session_state.get("live_clear_ref_candidates", [])
+                if candidates_list:
+                    st.markdown("##### Candidate Clear Scenes Found in CDSE")
+                    table_rows = []
+                    for c in candidates_list:
+                        sign = "+" if c.temporal_distance_days >= 0 else ""
+                        table_rows.append({
+                            "Date": c.date_str,
+                            "Temporal Offset": f"{sign}{c.temporal_distance_days:.1f} days",
+                            "Scene Cloud %": f"{c.scene_cloud_cover_pct:.1f}%" if c.scene_cloud_cover_pct is not None else "N/A",
+                            "AOI Cloud %": f"{c.aoi_cloud_fraction_pct:.1f}%" if c.aoi_cloud_fraction_pct is not None else "N/A (needs download)",
+                            "Status": "✅ " + c.status if c.passes_threshold else "⚠️ " + c.status,
+                            "Product ID": (c.scene_id[:35] + "...") if len(c.scene_id) > 35 else c.scene_id,
+                        })
+                    st.dataframe(table_rows, use_container_width=True)
+
+                    cand_labels = [c.display_label() for c in candidates_list]
+                    sel_cand_idx = st.selectbox(
+                        "Select Candidate Reference Scene to Download & Inspect",
+                        range(len(candidates_list)),
+                        format_func=lambda i: cand_labels[i],
+                        key="sel_clear_ref_cand",
+                    )
+                    selected_cand = candidates_list[sel_cand_idx]
+
+                    if st.button("📥 Download, Align & Inspect Candidate Reference", key="btn_download_clear_ref", type="primary", use_container_width=True):
+                        with st.spinner(f"Downloading and aligning Sentinel-2 scene from {selected_cand.date_str}..."):
+                            try:
+                                ref_provider = st.session_state.get("catalogue_provider")
+                                ref_svc = ClearReferenceService(provider=ref_provider)
+                                tgt_w = live_res.profile.get("width", 256)
+                                tgt_h = live_res.profile.get("height", 256)
+                                val_ref = ref_svc.acquire_and_align_reference(
+                                    candidate=selected_cand,
+                                    bbox=active_bbox,
+                                    target_profile=live_res.profile,
+                                    scale_mode="auto",
+                                    output_size_px=(tgt_w, tgt_h),
+                                )
+                                st.session_state["live_clear_ref"] = val_ref
+                                st.session_state["live_clear_ref_cand_meta"] = selected_cand
+                                st.success(f"Clear reference from {selected_cand.date_str} successfully acquired and geospatially aligned!")
+                            except Exception as e:
+                                st.error(f"Failed to acquire reference: {e}")
+
+                val_ref = st.session_state.get("live_clear_ref")
+                sel_cand_meta = st.session_state.get("live_clear_ref_cand_meta")
+
+                if val_ref is not None and sel_cand_meta is not None:
+                    st.divider()
+                    st.markdown("#### Reference Inspection & Comparison")
+                    ref_rgb = ClearReferenceService.to_rgb_preview(val_ref)
+
+                    c_ref1, c_ref2 = st.columns(2)
+                    with c_ref1:
+                        sign = "+" if sel_cand_meta.temporal_distance_days >= 0 else ""
+                        st.image(
+                            ref_rgb,
+                            caption=f"Clear Reference ({val_ref.acquisition_date}, {sign}{val_ref.temporal_distance_days:.1f}d)",
+                            use_container_width=True,
+                        )
+                    with c_ref2:
+                        st.image(
+                            live_res.prediction_rgb,
+                            caption=f"ECRformer Reconstructed Output ({target_date_str})",
+                            use_container_width=True,
+                        )
+
+                    st.warning(
+                        "⚠️ **This is a clear temporal reference from a different acquisition date. "
+                        "Reference-based differences may reflect real surface or atmospheric changes and "
+                        "should not be interpreted as strict reconstruction accuracy.**"
+                    )
+
+                    r_info1, r_info2, r_info3 = st.columns(3)
+                    r_info1.metric("Reference Date", val_ref.acquisition_date or "N/A")
+                    sign = "+" if sel_cand_meta.temporal_distance_days >= 0 else ""
+                    r_info2.metric("Temporal Distance", f"{sign}{sel_cand_meta.temporal_distance_days:.1f} days")
+                    r_info3.metric("Grid Alignment", f"{val_ref.array.shape[2]}×{val_ref.array.shape[1]} (EPSG:{val_ref.profile.get('crs')})")
+
+                    if st.button("📊 Calculate Reference-Based Metrics (Temporal)", key="btn_eval_live_clear_ref", type="secondary", use_container_width=True):
+                        with st.spinner("Computing 13-band temporal reference comparison metrics..."):
+                            try:
+                                metrics = live_res.evaluate_with_reference(val_ref)
+                                st.session_state["live_ecr_ref_metrics"] = metrics
+                                st.success("Temporal reference comparison metrics computed successfully!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Evaluation error: {e}")
 
         # Optional OpenSR Super-Resolution Stage (Live)
         st.divider()
@@ -1131,7 +1312,6 @@ with tab_live:
         live_sr: Optional[OpenSRResult] = st.session_state.get("live_sr_result")
         if live_sr is not None:
             st.subheader("OpenSR Super-Resolution (4 bands | 2.5 m | 4×)")
-            sr_d = live_sr.diagnostics
 
             sr_lv1, sr_lv2 = st.columns(2)
             with sr_lv1:
@@ -1139,14 +1319,7 @@ with tab_live:
             with sr_lv2:
                 st.image(live_sr.sr_rgb_preview, caption="OpenSR 2.5 m Super-Resolved (RGB: B04, B03, B02)", use_container_width=True)
 
-            lsrm1, lsrm2, lsrm3, lsrm4, lsrm5 = st.columns(5)
-            lsrm1.metric("Resolution", f"{sr_d.output_pixel_size_m} m")
-            lsrm2.metric("Scale Factor", f"{sr_d.scale_factor}x")
-            lsrm3.metric("Output Dimensions", f"{sr_d.output_width}x{sr_d.output_height}")
-            lsrm4.metric("Device", sr_d.execution_device)
-            lsrm5.metric("SR Time", f"{sr_d.execution_time_seconds:.1f}s")
-
-            lsrdl1, lsrdl2, lsrdl3 = st.columns(3)
+            lsrdl1, lsrdl2 = st.columns(2)
             with lsrdl1:
                 st.download_button(
                     "Download 4-Band SR GeoTIFF (2.5m)",
@@ -1165,15 +1338,10 @@ with tab_live:
                     use_container_width=True,
                     key="live_sr_dl_png",
                 )
-            with lsrdl3:
-                st.download_button(
-                    "Download OpenSR Diagnostics JSON",
-                    data=json.dumps(sr_d.to_dict(), indent=2),
-                    file_name=f"opensr_diagnostics_{date_str}.json",
-                    mime="application/json",
-                    use_container_width=True,
-                    key="live_sr_dl_json",
-                )
 
-            with st.expander("OpenSR Technical Diagnostics & Metadata", expanded=False):
-                st.json(sr_d.to_dict())
+            # Dedicated OpenSR Metrics & Diagnostics Area
+            render_opensr_metrics_ui(
+                sr_res=live_sr,
+                image_id=f"session_{date_str}",
+                key_prefix="live_sr",
+            )

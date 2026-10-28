@@ -74,17 +74,15 @@ def inject_css() -> None:
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap');
 
-/* ── Page background ── */
+/* ── Page background & Header ── */
 .stApp, .block-container {{
     background-color: {t['bg_page']} !important;
     color: {t['text_primary']} !important;
 }}
-
-/* ── Hide Streamlit chrome ── */
-#MainMenu {{ visibility: hidden; }}
-footer {{ visibility: hidden; }}
-.stDeployButton {{ display: none; }}
-[data-testid="stToolbar"] {{ display: none; }}
+header[data-testid="stHeader"] {{
+    background-color: {t['bg_page']} !important;
+    color: {t['text_primary']} !important;
+}}
 
 /* ── Typography ── */
 html, body, .stApp, .stMarkdown, p, span, label, div {{
@@ -108,21 +106,56 @@ h1, h2, h3, h4 {{
     background-color: {t['bg_surface']} !important;
     border-right: 1px solid {t['border']} !important;
 }}
+[data-testid="stSidebar"] h1,
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3,
+[data-testid="stSidebar"] h4,
 [data-testid="stSidebar"] p,
 [data-testid="stSidebar"] label,
+[data-testid="stSidebar"] span,
+[data-testid="stSidebar"] div,
 [data-testid="stSidebar"] .stMarkdown {{
     color: {t['text_primary']} !important;
 }}
+[data-testid="collapsedControl"],
+button[data-testid="stSidebarCollapseButton"] {{
+    color: {t['text_primary']} !important;
+    background-color: {t['bg_card']} !important;
+    border: 1px solid {t['border']} !important;
+    border-radius: 8px !important;
+}}
+[data-testid="collapsedControl"]:hover,
+button[data-testid="stSidebarCollapseButton"]:hover {{
+    border-color: {t['border_accent']} !important;
+    color: {t['accent_blue']} !important;
+}}
 
 /* ── Expander ── */
-[data-testid="stExpander"] {{
-    background-color: {t['bg_surface']};
-    border: 1px solid {t['border']};
-    border-radius: 10px;
+[data-testid="stExpander"],
+[data-testid="stExpander"] details,
+[data-testid="stExpander"] summary,
+[data-testid="stExpanderDetails"],
+div[data-testid="stExpanderDetails"] {{
+    background-color: {t['bg_card']} !important;
+    color: {t['text_primary']} !important;
+    border: 1px solid {t['border']} !important;
+    border-radius: 10px !important;
     margin-bottom: 12px;
 }}
-[data-testid="stExpander"] summary {{
+[data-testid="stExpander"] summary,
+[data-testid="stExpander"] summary:hover,
+[data-testid="stExpander"] summary:focus {{
+    background-color: {t['bg_card']} !important;
     color: {t['text_primary']} !important;
+}}
+[data-testid="stExpander"] summary *,
+[data-testid="stExpander"] summary p,
+[data-testid="stExpander"] summary span,
+[data-testid="stExpander"] summary div,
+[data-testid="stExpander"] summary svg {{
+    color: {t['text_primary']} !important;
+    fill: {t['text_primary']} !important;
+    font-weight: 600 !important;
 }}
 
 /* ── Metric cards ── */

@@ -83,6 +83,7 @@ st.set_page_config(
     page_title="CloudVisionAI — Satellite Image Restoration",
     page_icon="🛰️",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
 # ---- Theme & Session State ----
@@ -90,6 +91,12 @@ if "cvai_theme" not in st.session_state:
     st.session_state["cvai_theme"] = "dark"
 if "active_view" not in st.session_state:
     st.session_state["active_view"] = "landing"
+
+# Preserve credentials in os.environ across all reruns
+if "cdse_cid" in st.session_state and st.session_state["cdse_cid"]:
+    os.environ["CDSE_CLIENT_ID"] = st.session_state["cdse_cid"]
+if "cdse_csec" in st.session_state and st.session_state["cdse_csec"]:
+    os.environ["CDSE_CLIENT_SECRET"] = st.session_state["cdse_csec"]
 
 # Inject full CloudVisionAI theme stylesheet
 inject_css()
@@ -121,20 +128,109 @@ with st.sidebar:
     cid = os.environ.get("CDSE_CLIENT_ID", "").strip()
     csec = os.environ.get("CDSE_CLIENT_SECRET", "").strip()
 
+    st.markdown(
+        """
+        <div style="font-family:'Space Grotesk', sans-serif; font-size:1.1rem; font-weight:700; margin-top:8px; margin-bottom:4px;">
+            CDSE Authentication
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     if cid and csec:
-        st.success("**CDSE Credentials:** Configured")
+        masked_cid = f"{cid[:4]}...{cid[-4:]}" if len(cid) > 8 else "***"
+        st.success(f"**Status:** Configured  \n`ID: {masked_cid}`")
+        with st.expander("⚙️ Update CDSE Credentials", expanded=False):
+            u_cid = st.text_input(
+                "CDSE Client ID",
+                value=st.session_state.get("cdse_cid", cid),
+                placeholder="e.g. 5fa7b2c1-...",
+                key="input_cdse_cid",
+            )
+            u_csec = st.text_input(
+                "CDSE Client Secret",
+                value=st.session_state.get("cdse_csec", csec),
+                type="password",
+                placeholder="••••••••••••••••",
+                key="input_cdse_csec",
+            )
+            c_btn1, c_btn2 = st.columns(2)
+            with c_btn1:
+                if st.button("Apply", key="btn_apply_creds", type="primary", use_container_width=True):
+                    if u_cid.strip() and u_csec.strip():
+                        os.environ["CDSE_CLIENT_ID"] = u_cid.strip()
+                        os.environ["CDSE_CLIENT_SECRET"] = u_csec.strip()
+                        st.session_state["cdse_cid"] = u_cid.strip()
+                        st.session_state["cdse_csec"] = u_csec.strip()
+                        st.session_state.pop("catalogue_provider", None)
+                        st.success("Credentials saved to active session.")
+                        st.rerun()
+                    else:
+                        st.error("Both fields required.")
+            with c_btn2:
+                if st.button("Verify", key="btn_test_creds", use_container_width=True):
+                    from backend.auth.cdse_auth import test_credentials
+                    test_cid = u_cid.strip() or cid
+                    test_csec = u_csec.strip() or csec
+                    if test_cid and test_csec:
+                        with st.spinner("Connecting to CDSE OAuth2 endpoint..."):
+                            ok, msg = test_credentials(test_cid, test_csec)
+                        if ok:
+                            st.success(msg)
+                        else:
+                            st.error(msg)
+                    else:
+                        st.error("Enter Client ID and Secret to test.")
+
+            if st.button("Clear Credentials", key="btn_clear_creds", use_container_width=True):
+                os.environ.pop("CDSE_CLIENT_ID", None)
+                os.environ.pop("CDSE_CLIENT_SECRET", None)
+                st.session_state.pop("cdse_cid", None)
+                st.session_state.pop("cdse_csec", None)
+                st.session_state.pop("catalogue_provider", None)
+                st.info("Credentials cleared.")
+                st.rerun()
     else:
-        st.warning("**CDSE Credentials:** Missing")
-        with st.expander("Enter CDSE Credentials", expanded=False):
-            u_cid = st.text_input("CDSE Client ID", value=st.session_state.get("cdse_cid", ""))
-            u_csec = st.text_input("CDSE Client Secret", value=st.session_state.get("cdse_csec", ""), type="password")
-            if st.button("Apply Credentials", key="btn_apply_creds"):
-                if u_cid and u_csec:
+        st.warning("**Status:** Not Configured")
+        st.caption("Enter your CDSE OAuth2 credentials for live Sentinel-1 & 2 search and acquisition:")
+        u_cid = st.text_input(
+            "CDSE Client ID",
+            value=st.session_state.get("cdse_cid", ""),
+            placeholder="e.g. 5fa7b2c1-...",
+            key="input_cdse_cid",
+        )
+        u_csec = st.text_input(
+            "CDSE Client Secret",
+            value=st.session_state.get("cdse_csec", ""),
+            type="password",
+            placeholder="••••••••••••••••",
+            key="input_cdse_csec",
+        )
+        c_btn1, c_btn2 = st.columns(2)
+        with c_btn1:
+            if st.button("Apply", key="btn_apply_creds", type="primary", use_container_width=True):
+                if u_cid.strip() and u_csec.strip():
                     os.environ["CDSE_CLIENT_ID"] = u_cid.strip()
                     os.environ["CDSE_CLIENT_SECRET"] = u_csec.strip()
                     st.session_state["cdse_cid"] = u_cid.strip()
                     st.session_state["cdse_csec"] = u_csec.strip()
+                    st.session_state.pop("catalogue_provider", None)
+                    st.success("Credentials saved to active session.")
                     st.rerun()
+                else:
+                    st.error("Both fields required.")
+        with c_btn2:
+            if st.button("Verify", key="btn_test_creds", use_container_width=True):
+                from backend.auth.cdse_auth import test_credentials
+                if u_cid.strip() and u_csec.strip():
+                    with st.spinner("Connecting to CDSE OAuth2 endpoint..."):
+                        ok, msg = test_credentials(u_cid.strip(), u_csec.strip())
+                    if ok:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
+                else:
+                    st.error("Enter Client ID and Secret to test.")
 
     device_obj = get_device()
     device_str = "CUDA (RTX 3050)" if "cuda" in str(device_obj) else "CPU"
@@ -427,6 +523,9 @@ with tab_cached:
 with tab_live:
     st.header("Live CDSE Acquisition Workflow")
     st.caption("Search a location or landmark, specify AOI extent, query CDSE Sentinel collections, harmonize, and reconstruct.")
+
+    if not (os.environ.get("CDSE_CLIENT_ID") and os.environ.get("CDSE_CLIENT_SECRET")):
+        st.info("💡 **Copernicus CDSE Credentials:** Live catalogue search requires CDSE credentials. Configure them in the **left sidebar** under **CDSE Authentication**, or test with the cached Rome benchmark below.")
 
     # ---- Canonical State Initialization ----
     if "selected_bbox" not in st.session_state:

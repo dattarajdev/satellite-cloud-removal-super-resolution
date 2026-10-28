@@ -4,4 +4,5 @@ rasterio>=1.4.0
 pillow>=10.0
 tqdm>=4.66
 einops>=0.8.0
-timm>=1.0.0
+timm>=1.0.0folium>=0.17.0
+streamlit-folium>=0.23.2

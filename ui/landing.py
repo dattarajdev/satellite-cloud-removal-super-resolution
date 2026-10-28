@@ -35,6 +35,30 @@ def render_landing_page() -> None:
     t = get_tokens()
     current_theme = get_theme()
 
+    # Collapse the sidebar on the landing page using JS (no CSS display:none — avoids state leakage)
+    st.markdown(
+        """
+        <script>
+        (function() {
+            function collapseSidebar() {
+                // Try the collapse button (aria-expanded="true" means sidebar is open)
+                var btn = document.querySelector('button[data-testid="stSidebarCollapseButton"]');
+                if (!btn) btn = document.querySelector('[data-testid="collapsedControl"] button');
+                if (btn) { btn.click(); return; }
+                // Fallback: hide via style (only on landing, cleaned up on next render)
+                var sb = document.querySelector('[data-testid="stSidebar"]');
+                if (sb) sb.style.display = 'none';
+                var cc = document.querySelector('[data-testid="collapsedControl"]');
+                if (cc) cc.style.display = 'none';
+            }
+            if (document.readyState === 'complete') { collapseSidebar(); }
+            else { window.addEventListener('load', collapseSidebar); }
+        })();
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
+
     # -----------------------------------------------------------------------
     # Top Navigation Bar
     # -----------------------------------------------------------------------

@@ -164,3 +164,35 @@ class CDSEAuth:
         expires_in = int(payload.get("expires_in", 300))
         print(f"  [AUTH] Token acquired (expires in {expires_in}s).")
         return CDSEToken(payload["access_token"], expires_in)
+
+
+def test_credentials(client_id: str, client_secret: str) -> tuple[bool, str]:
+    """
+    Test OAuth2 client_credentials directly against the CDSE token endpoint.
+
+    Returns (True, message) on success, or (False, error_message) on failure.
+    Safe: Does not log or leak secrets.
+    """
+    cid = client_id.strip() if client_id else ""
+    csec = client_secret.strip() if client_secret else ""
+    if not cid or not csec:
+        return False, "Both Client ID and Client Secret are required."
+
+    try:
+        resp = requests.post(
+            CDSE_TOKEN_URL,
+            data={
+                "grant_type": "client_credentials",
+                "client_id": cid,
+                "client_secret": csec,
+            },
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            return True, "CDSE OAuth2 credentials verified successfully."
+        elif resp.status_code in (400, 401):
+            return False, f"Authentication failed (HTTP {resp.status_code}): Invalid Client ID or Secret."
+        else:
+            return False, f"CDSE identity service returned HTTP {resp.status_code}."
+    except requests.RequestException as exc:
+        return False, f"Network error connecting to CDSE identity service: {exc}"

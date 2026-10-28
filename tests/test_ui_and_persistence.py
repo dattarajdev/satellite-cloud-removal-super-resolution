@@ -75,6 +75,31 @@ class TestUIAndPersistence(unittest.TestCase):
         self.assertIsNotNone(r.get("metrics_summary"))
         self.assertEqual(r["metrics_summary"]["psnr"], 24.68)
 
+    def test_cdse_auth_validation(self):
+        """Test CDSE credential validation function without live network."""
+        from backend.auth.cdse_auth import test_credentials, CDSEAuth, CDSEAuthError
+
+        # Empty credentials check
+        ok, msg = test_credentials("", "")
+        self.assertFalse(ok)
+        self.assertIn("required", msg.lower())
+
+        ok, msg = test_credentials("only_id", "")
+        self.assertFalse(ok)
+        self.assertIn("required", msg.lower())
+
+        # When environment variables are absent, CDSEAuth should raise CDSEAuthError
+        orig_id = os.environ.pop("CDSE_CLIENT_ID", None)
+        orig_sec = os.environ.pop("CDSE_CLIENT_SECRET", None)
+        try:
+            with self.assertRaises(CDSEAuthError):
+                CDSEAuth()
+        finally:
+            if orig_id:
+                os.environ["CDSE_CLIENT_ID"] = orig_id
+            if orig_sec:
+                os.environ["CDSE_CLIENT_SECRET"] = orig_sec
+
 
 if __name__ == "__main__":
     unittest.main()
